@@ -1,15 +1,11 @@
-extern crate crossterm;
-extern crate nalgebra as na;
-extern crate rand; // For dithering.
-
 use crossterm::{cursor, QueueableCommand, Result};
 use rand::Rng;
 use std::cmp::{max, min};
 use std::io::Write;
 
-type Vec3 = na::Vector3<f32>;
-type Point = na::Point3<f32>;
-type Mat4 = na::Matrix4<f32>;
+type Vec3 = nalgebra::Vector3<f32>;
+type Point = nalgebra::Point3<f32>;
+type Mat4 = nalgebra::Matrix4<f32>;
 
 fn relu(x: f32) -> f32 {
     if x >= 0.0 {
@@ -34,38 +30,96 @@ fn dither(i: f32, clip: usize) -> usize {
     }
 }
 
+struct FrameBuffer {
+    brightness: Vec<u8>,
+    z_buffer: Vec<f32>,
+    sx: usize,
+    sy: usize,
+}
+
+impl FrameBuffer {
+    fn new() -> Result<FrameBuffer> {
+        let (sx_, sy_) = crossterm::terminal::size().unwrap();
+        let sx = sx_ as usize;
+        let sy = sy_ as usize;
+        let size = ((sx + 1) * sy) as usize;
+
+        std::io::stdout().queue(cursor::Hide)?;
+
+        let brightness: Vec<u8> = Vec::with_capacity(size);
+        let z_buffer: Vec<f32> = Vec::with_capacity(size);
+        Ok(FrameBuffer {
+            sx,
+            sy,
+            brightness,
+            z_buffer,
+        })
+    }
+
+    fn clear(&mut self) {
+        let (sx, sy) = crossterm::terminal::size().unwrap();
+        self.sx = sx as usize;
+        self.sy = sy as usize;
+        let size = self.sy * (self.sx + 1);
+        self.z_buffer.clear();
+        self.z_buffer.resize(size, -1000.0);
+        self.brightness.clear();
+        self.brightness.resize(size, ' ' as u8);
+        for y in 0..self.sy {
+            self.brightness[y * (self.sx + 1) + self.sx] = '\n' as u8;
+        }
+    }
+
+    fn write(&self) -> Result<()> {
+        let mut stdout = std::io::stdout();
+        stdout.queue(crossterm::terminal::Clear(
+            crossterm::terminal::ClearType::All,
+        ))?;
+        stdout.queue(cursor::MoveTo(0, 0))?;
+        // actually safe
+        let s = unsafe { std::str::from_utf8_unchecked(&self.brightness[0..(self.sx * self.sy)]) };
+        stdout.queue(crossterm::style::Print(&s))?;
+        Ok(())
+    }
+
+    fn poke_if(&mut self, x: usize, y: usize, value: f32, z: f32) {
+        let lightlevel_str = "-~+*=;%#$@";
+        let n = lightlevel_str.len();
+
+        let ix = y * (self.sx + 1) + x;
+
+        if self.z_buffer[ix] < z {
+            self.z_buffer[ix] = z;
+            let val_ix = dither(value * (n as f32), n);
+            self.brightness[ix] = lightlevel_str.as_bytes()[val_ix];
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let light_dir = Vec3::new(1.0, 5.0, -3.0).normalize();
     let cam_pos = Vec3::new(0.0, 0.0, 4.0);
     // Subdivisions of torus
-    let (n1, n2) = (250, 100);
+    let (n1, n2) = (500, 200);
     // Radii of torus
     let (r1, r2) = (1.0, 0.45);
-    let lightlevel_str = String::from("..',-~+*=$#@");
 
     let two_pi: f32 = 2.0 * 3.1415926535;
     let mut stdout = std::io::stdout();
     stdout.queue(cursor::Hide)?;
 
-    let lightlevel: Vec<crossterm::style::Print<String>> = (0..lightlevel_str.len())
-        .map(|i| crossterm::style::Print(lightlevel_str[i..(i + 1)].to_string()))
-        .collect();
-
     let mut global_transform = Mat4::identity();
-    loop {
-        stdout.queue(crossterm::terminal::Clear(
-            crossterm::terminal::ClearType::All,
-        ))?;
-        let (sx, sy) = crossterm::terminal::size().unwrap();
-        let mut z_buffer = na::DMatrix::<f32>::repeat(sx as usize, sy as usize, 1000.0);
 
-        let z_clip = 1000.0;
+    let mut framebuffer = FrameBuffer::new()?;
+    loop {
+        framebuffer.clear();
+        let (sx, sy) = (framebuffer.sx, framebuffer.sy);
+
         let aspect = (min(sx, sy) as f32) / (max(sx, sy) as f32);
         let screenspace = Mat4::new_translation(&Vec3::new(0.5 * sx as f32, 0.5 * sy as f32, 0.0))
             * Mat4::new_scaling(0.5 * min(sx, sy) as f32)
-            * Mat4::new_perspective(aspect, 3.141 / 4.0, 0.1, z_clip)
+            * Mat4::new_perspective(aspect, 3.141 / 4.0, 0.1, 1000.0)
             * Mat4::new_translation(&cam_pos);
-        z_buffer.fill(-z_clip);
 
         // For each voxel, compute screenspace position, lighting, then (maybe) draw.
         for i1 in 0..n1 {
@@ -119,14 +173,7 @@ fn main() -> Result<()> {
                             dither(p_screen.x, sx as usize),
                             dither(p_screen.y, sy as usize),
                         );
-                        let this_z = z_buffer.get_mut((ix, iy)).unwrap();
-                        if p_screen.z > *this_z {
-                            *this_z = p_screen.z;
-                            let light_dithered =
-                                dither(light * lightlevel.len() as f32, lightlevel.len());
-                            stdout.queue(cursor::MoveTo(ix as u16, iy as u16))?;
-                            stdout.queue(&lightlevel[light_dithered as usize])?;
-                        }
+                        framebuffer.poke_if(ix, iy, light, p_screen.z);
                     }
                 }
             }
@@ -135,12 +182,13 @@ fn main() -> Result<()> {
         global_transform *= Mat4::from_euler_angles(0.0, 0.0, 0.03);
         global_transform *= Mat4::from_euler_angles(0.1, -0.05, 0.0);
 
-        stdout.queue(cursor::MoveTo(sx / 2 - 14, 1))?;
+        framebuffer.write()?;
+        stdout.queue(cursor::MoveTo(sx as u16 / 2 - 14, 1))?;
         stdout.queue(crossterm::style::Print("F O R B I D D E N D O N U T"))?;
-        stdout.queue(cursor::MoveTo(sx / 2 - 14, sy - 1))?;
+        stdout.queue(cursor::MoveTo(sx as u16 / 2 - 14, sy as u16 - 1))?;
         stdout.queue(crossterm::style::Print("F O R B I D D E N D O N U T"))?;
 
         stdout.flush()?;
-        std::thread::sleep_ms(80);
+        std::thread::sleep_ms(50);
     }
 }
