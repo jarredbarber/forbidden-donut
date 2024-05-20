@@ -6,7 +6,7 @@ use std::io::Write;
 type Vec3 = nalgebra::Vector3<f32>;
 type Point = nalgebra::Point3<f32>;
 type Mat4 = nalgebra::Matrix4<f32>;
-pub type Result<T> = std::result::Result<T, std::io::Error>;
+type Result<T> = std::result::Result<T, std::io::Error>;
 
 fn relu(x: f32) -> f32 {
     if x >= 0.0 {
