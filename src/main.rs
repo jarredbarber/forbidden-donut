@@ -1,4 +1,4 @@
-use crossterm::{cursor, QueueableCommand, Result};
+use crossterm::{cursor, QueueableCommand};
 use rand::Rng;
 use std::cmp::{max, min};
 use std::io::Write;
@@ -6,6 +6,7 @@ use std::io::Write;
 type Vec3 = nalgebra::Vector3<f32>;
 type Point = nalgebra::Point3<f32>;
 type Mat4 = nalgebra::Matrix4<f32>;
+type Result<T> = std::result::Result<T, std::io::Error>;
 
 fn relu(x: f32) -> f32 {
     if x >= 0.0 {
@@ -189,6 +190,6 @@ fn main() -> Result<()> {
         stdout.queue(crossterm::style::Print("F O R B I D D E N D O N U T"))?;
 
         stdout.flush()?;
-        std::thread::sleep_ms(50);
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
